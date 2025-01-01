@@ -203,14 +203,19 @@ class ModernBertEmbeddings(nn.Module):
 
     @torch.compile(dynamic=True)
     def compiled_embeddings(self, input_ids: torch.LongTensor) -> torch.Tensor:
-        return self.drop(self.norm(self.tok_embeddings(input_ids)))
+        # Ensure we're creating computation graph
+        embeddings = self.tok_embeddings(input_ids)
+        normalized = self.norm(embeddings)
+        return self.drop(normalized)
 
     def forward(self, input_ids: torch.LongTensor, position_ids: Optional[torch.LongTensor] = None) -> torch.Tensor:
-        hidden_states = (
-            self.compiled_embeddings(input_ids)
-            if self.config.reference_compile
-            else self.drop(self.norm(self.tok_embeddings(input_ids)))
-        )
+        if self.config.reference_compile:
+            hidden_states = self.compiled_embeddings(input_ids)
+        else:
+            # Ensure we're creating computation graph
+            embeddings = self.tok_embeddings(input_ids)
+            normalized = self.norm(embeddings)
+            hidden_states = self.drop(normalized)
         return hidden_states
 
 
@@ -691,21 +696,8 @@ def _unpad_modernbert_input(
 ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, int, Optional[torch.Tensor], Optional[torch.Tensor]]:
     """
     Remove padding from input sequences.
-
-    Args:
-        inputs: (batch, seqlen, ...) or (batch, seqlen)
-        attention_mask: (batch, seqlen), bool / int, 1 means valid and 0 means not valid.
-        position_ids: (batch, seqlen), int, position ids
-        labels: (batch, seqlen), int, labels
-
-    Returns:
-        unpadded_inputs: (total_nnz, ...), where total_nnz = number of tokens selected in attention_mask.
-        indices: (total_nnz)
-        cu_seqlens: (batch + 1), the cumulative sequence lengths
-        max_seqlen_in_batch: int
-        unpadded_position_ids: (total_nnz) or None
-        unpadded_labels: (total_nnz) or None
     """
+    # Ensure we maintain gradients through unpadding
     seqlens_in_batch = attention_mask.sum(dim=-1, dtype=torch.int32)
     indices = torch.nonzero(attention_mask.flatten(), as_tuple=False).flatten()
     max_seqlen_in_batch = int(seqlens_in_batch.max().item())
@@ -718,6 +710,7 @@ def _unpad_modernbert_input(
         shape = batch * seqlen
         unpadded_inputs = inputs.view(shape, *rest)[indices]
 
+    # Make sure these operations maintain gradients
     unpadded_position_ids = position_ids.flatten()[indices] if position_ids is not None else None
     unpadded_labels = labels.flatten()[indices] if labels is not None else None
 
