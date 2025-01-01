@@ -845,10 +845,11 @@ class ModernBertModel(ModernBertPreTrainedModel):
     )
     def forward(
         self,
-        input_ids: torch.LongTensor = None,
+        input_ids: Optional[torch.LongTensor] = None,
         attention_mask: Optional[torch.Tensor] = None,
         sliding_window_mask: Optional[torch.Tensor] = None,
         position_ids: Optional[torch.LongTensor] = None,
+        inputs_embeds: Optional[torch.FloatTensor] = None,
         indices: Optional[torch.Tensor] = None,
         cu_seqlens: Optional[torch.Tensor] = None,
         max_seqlen: Optional[int] = None,
@@ -864,35 +865,49 @@ class ModernBertModel(ModernBertPreTrainedModel):
         )
         return_dict = return_dict if return_dict is not None else self.config.use_return_dict
 
+        if input_ids is not None and inputs_embeds is not None:
+            raise ValueError("You cannot specify both input_ids and inputs_embeds at the same time")
+        elif input_ids is not None:
+            input_shape = input_ids.size()
+        elif inputs_embeds is not None:
+            input_shape = inputs_embeds.size()[:-1]
+        else:
+            raise ValueError("You have to specify either input_ids or inputs_embeds")
+
         all_hidden_states = () if output_hidden_states else None
         all_self_attentions = () if output_attentions else None
 
         self._maybe_set_compile()
-        self.warn_if_padding_and_no_attention_mask(input_ids, attention_mask)
+        self.warn_if_padding_and_no_attention_mask(input_ids if input_ids is not None else inputs_embeds, attention_mask)
 
         if batch_size is None and seq_len is None:
-            batch_size, seq_len = input_ids.shape[:2]
+            batch_size, seq_len = input_shape
 
         if attention_mask is None:
-            attention_mask = torch.ones((batch_size, seq_len), device=input_ids.device, dtype=torch.bool)
+            attention_mask = torch.ones((batch_size, seq_len), device=input_ids.device if input_ids is not None else inputs_embeds.device, dtype=torch.bool)
 
         repad = False
         if self.config._attn_implementation == "flash_attention_2":
             if indices is None and cu_seqlens is None and max_seqlen is None:
                 repad = True
                 with torch.no_grad():
-                    input_ids, indices, cu_seqlens, max_seqlen, *_ = _unpad_modernbert_input(
-                        inputs=input_ids, attention_mask=attention_mask
-                    )
+                    if input_ids is not None:
+                        input_ids, indices, cu_seqlens, max_seqlen, *_ = _unpad_modernbert_input(
+                            inputs=input_ids, attention_mask=attention_mask
+                        )
+                    if inputs_embeds is not None:
+                        inputs_embeds, indices, cu_seqlens, max_seqlen, *_ = _unpad_modernbert_input(
+                            inputs=inputs_embeds, attention_mask=attention_mask
+                        )
         else:
             if position_ids is None:
-                position_ids = torch.arange(seq_len, device=input_ids.device).unsqueeze(0)
+                position_ids = torch.arange(seq_len, device=input_ids.device if input_ids is not None else inputs_embeds.device).unsqueeze(0)
 
             attention_mask, sliding_window_mask = self._update_attention_mask(
                 attention_mask, output_attentions=output_attentions
             )
 
-        hidden_states = self.embeddings(input_ids)
+        hidden_states = self.embeddings(input_ids) if input_ids is not None else inputs_embeds
 
         for encoder_layer in self.layers:
             if output_hidden_states:
