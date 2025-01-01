@@ -998,10 +998,11 @@ class ModernBertModel(ModernBertPreTrainedModel):
     )
     def forward(
         self,
-        input_ids: torch.LongTensor = None,
+        input_ids: Optional[torch.LongTensor] = None,
         attention_mask: Optional[torch.Tensor] = None,
         sliding_window_mask: Optional[torch.Tensor] = None,
         position_ids: Optional[torch.LongTensor] = None,
+        inputs_embeds: Optional[torch.FloatTensor] = None,
         indices: Optional[torch.Tensor] = None,
         cu_seqlens: Optional[torch.Tensor] = None,
         max_seqlen: Optional[int] = None,
@@ -1017,14 +1018,20 @@ class ModernBertModel(ModernBertPreTrainedModel):
         )
         return_dict = return_dict if return_dict is not None else self.config.use_return_dict
 
+        if input_ids is not None and inputs_embeds is not None:
+            raise ValueError("You cannot specify both input_ids and inputs_embeds at the same time")
+        elif input_ids is not None:
+            batch_size, seq_len = input_ids.shape[:2]
+        elif inputs_embeds is not None:
+            batch_size, seq_len = inputs_embeds.shape[:2]
+        else:
+            raise ValueError("You have to specify either input_ids or inputs_embeds")
+
         all_hidden_states = () if output_hidden_states else None
         all_self_attentions = () if output_attentions else None
 
         self._maybe_set_compile()
         self.warn_if_padding_and_no_attention_mask(input_ids, attention_mask)
-
-        if batch_size is None and seq_len is None:
-            batch_size, seq_len = input_ids.shape[:2]
 
         if attention_mask is None:
             attention_mask = torch.ones((batch_size, seq_len), device=input_ids.device, dtype=torch.bool)
@@ -1045,7 +1052,10 @@ class ModernBertModel(ModernBertPreTrainedModel):
                 attention_mask, output_attentions=output_attentions
             )
 
-        hidden_states = self.embeddings(input_ids)
+        if inputs_embeds is None:
+            hidden_states = self.embeddings(input_ids)
+        else:
+            hidden_states = inputs_embeds
 
         for encoder_layer in self.layers:
             if output_hidden_states:
