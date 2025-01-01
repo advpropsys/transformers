@@ -201,10 +201,16 @@ class ModernBertEmbeddings(nn.Module):
         self.norm = nn.LayerNorm(config.hidden_size, eps=config.norm_eps, bias=config.norm_bias)
         self.drop = nn.Dropout(config.embedding_dropout)
 
+    @torch.compile(dynamic=True)
+    def compiled_embeddings(self, input_ids: torch.LongTensor) -> torch.Tensor:
+        return self.drop(self.norm(self.tok_embeddings(input_ids)))
+
     def forward(self, input_ids: torch.LongTensor, position_ids: Optional[torch.LongTensor] = None) -> torch.Tensor:
-        hidden_states = self.tok_embeddings(input_ids)
-        hidden_states = self.norm(hidden_states)
-        hidden_states = self.drop(hidden_states)
+        hidden_states = (
+            self.compiled_embeddings(input_ids)
+            if self.config.reference_compile
+            else self.drop(self.norm(self.tok_embeddings(input_ids)))
+        )
         return hidden_states
 
 
